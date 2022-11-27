@@ -1,11 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
@@ -52,15 +52,55 @@ func main() {
 			log.Fatalf("Got error marshalling map: %s", err)
 		}
 		input := &dynamodb.PutItemInput{
-			Item:      item,
-			TableName: aws.String("project"),
+			Item:                item,
+			TableName:           aws.String("project"),
+			ConditionExpression: aws.String("attribute_not_exists(id)"),
 		}
-		x, err := db.PutItem(input)
+		_, err = db.PutItem(input)
 		if err != nil {
-			log.Fatalf("Got error calling PutItem: %s", err)
+			if aerr, ok := err.(awserr.Error); ok {
+				switch aerr.Code() {
+				case dynamodb.ErrCodeConditionalCheckFailedException:
+					c.JSON(http.StatusForbidden, gin.H{"message": "project exists"})
+					return
+				default:
+					log.Fatalf("Got error calling PutItem: %s", aerr.Error())
+					c.JSON(http.StatusInternalServerError, gin.H{"message": aerr.Error()})
+					return
+				}
+			}
+		} else {
+			log.Fatalf("Got error calling PutItem: %s", err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
 		}
-		fmt.Printf("%T %v", x, x)
 		c.JSON(http.StatusOK, gin.H{"name": project.Name, "website": project.Website, "max_claps_count": project.MaxClapsCount})
+	})
+
+	router.GET("/project/:pid", func(c *gin.Context) {
+		projectId := c.Param("pid")
+
+		result, err := db.GetItem(&dynamodb.GetItemInput{
+			TableName: aws.String("project"),
+			Key: map[string]*dynamodb.AttributeValue{
+				"id": {
+					S: aws.String(projectId),
+				},
+			},
+		})
+		if err != nil {
+			log.Fatalf("Got error calling GetItem: %s", err)
+		}
+
+		if result.Item == nil {
+			c.JSON(http.StatusNotFound, gin.H{"message": "project not found"})
+			return
+		} else {
+			project := Project{}
+			dynamodbattribute.UnmarshalMap(result.Item, &project)
+			c.JSON(http.StatusOK, project)
+			return
+		}
 	})
 
 	router.Run() // listen and serve on 0.0.0.0:8080 (for windows "localhost:8080")
