@@ -1,12 +1,19 @@
 package main
 
 import (
+	"context"
 	"net/http"
+	"os"
 
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
+	ginadapter "github.com/awslabs/aws-lambda-go-api-proxy/gin"
 	"github.com/gin-gonic/gin"
 )
+
+var ginLambda *ginadapter.GinLambda
 
 func connectDynamo() *dynamodb.DynamoDB {
 	sess := session.Must(session.NewSessionWithOptions(session.Options{
@@ -21,6 +28,10 @@ func attachDB(db *dynamodb.DynamoDB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set("db", db)
 	}
+}
+
+func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+	return ginLambda.ProxyWithContext(ctx, request)
 }
 
 func main() {
@@ -38,5 +49,11 @@ func main() {
 	router.GET("/project/:pid", ReadProject)
 	router.POST("/project/:pid/item/:iid/claps", CreateOrUpdateClaps)
 
-	router.Run() // listen and serve on 0.0.0.0:8080 (for windows "localhost:8080")
+	env := os.Getenv("GIN_MODE")
+	if env == "release" {
+		ginLambda = ginadapter.New(router)
+		lambda.Start(Handler)
+	} else {
+		router.Run(":8080")
+	}
 }
